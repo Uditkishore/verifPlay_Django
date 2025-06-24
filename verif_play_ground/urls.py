@@ -18,7 +18,7 @@ from django.contrib import admin
 from django.urls import path
 from django.conf import settings
 from django.conf.urls.static import static
-from verif_play_ground_app.views import UvmRalGeneratorView, UvmRalGeneratorbase64View, DrawSystemBlockAPIView, home
+from verif_play_ground_app.views import *
 
 urlpatterns = [
     path('', home, name='home'),
@@ -26,6 +26,8 @@ urlpatterns = [
     path('generate-uvm-ral/', UvmRalGeneratorView.as_view(), name='generate-uvm-ral'),
     path('generate-uvm-ral-base/', UvmRalGeneratorbase64View.as_view(), name='generate-uvm-ral-base'),
     path('drawSystemBlockAPIView/', DrawSystemBlockAPIView.as_view(), name='drawSystemBlockAPIView'),
+    path('api/chat', ChatbotView.as_view(), name='chat'),
+    path('api/upload', UploadBase64DocumentView.as_view(), name='upload'),
 ]
 
 # Serve media files in development

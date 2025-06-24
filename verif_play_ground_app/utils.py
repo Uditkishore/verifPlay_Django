@@ -1,5 +1,13 @@
 import pandas as pd
 import re
+import os
+import base64
+import faiss
+import torch
+import pymongo
+from bs4 import BeautifulSoup
+from sentence_transformers import SentenceTransformer
+
 
 def parse_field(field_str):
     """
@@ -188,4 +196,92 @@ def excel_to_uvm_ral(excel_file, output_file):
 
     except Exception as e:
         print(f"Error: {e}")
+
+MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
+client = pymongo.MongoClient(MONGO_URI)
+db = client["Verif_Playground"]
+collection = db.get_collection("scripts")
+
+# Embedding model
+model = SentenceTransformer("all-MiniLM-L6-v2")
+
+# Helper functions
+def extract_text_from_html(html):
+    soup = BeautifulSoup(html, "html.parser")
+    return soup.get_text(separator="\n").strip()
+
+def is_base64(text):
+    clean = re.sub(r"<[^>]+>", "", text).strip().replace("\n", "").replace(" ", "")
+    if len(clean) < 100:
+        return False
+    try:
+        base64.b64decode(clean, validate=True)
+        return True
+    except:
+        return False
+
+def decode_base64(text):
+    try:
+        padded = text + "=" * (-len(text) % 4)
+        return base64.b64decode(padded).decode("utf-8", errors="ignore")
+    except:
+        return None
+
+# Build index
+def build_faiss_index():
+    docs = []
+    metadatas = []
+
+    for doc in collection.find():
+        html_data = doc.get("htmlData", "")
+        if not html_data:
+            continue
+
+        # Try decoding base64, else treat as plain HTML
+        if is_base64(html_data):
+            decoded = decode_base64(html_data)
+            if not decoded:
+                continue
+            text = extract_text_from_html(decoded)
+        else:
+            text = extract_text_from_html(html_data)
+
+        if not text.strip():
+            continue
+
+        docs.append(text)
+        metadatas.append({
+            "_id": str(doc["_id"]),
+            "fileName": doc.get("fileName", "unknown")
+        })
+
+    # Generate embeddings
+    if not docs:
+        raise ValueError("No valid documents found to index.")
+    
+    embeddings = model.encode(docs, convert_to_tensor=True)
+    index = faiss.IndexFlatL2(embeddings.shape[1])
+    index.add(embeddings.cpu().numpy())
+
+    return index, docs, metadatas
+
+# Answer question
+def query_documents(question, index, docs, metadatas, top_k=3):
+    q_embedding = model.encode([question])
+    D, I = index.search(q_embedding, top_k)
+    results = [docs[i] for i in I[0]]
+    scores = D[0]
+
+    # Check distance thresholds (smaller is better in L2)
+    best_score = scores[0]
+    best_result = results[0]
+
+    # Tune threshold as needed (e.g. 1.5 for MiniLM)
+    if best_score < 1.5:
+        return best_result
+    else:
+        for res in results:
+            if re.search(re.escape(question), res, re.IGNORECASE):
+                return res
+        return "Sorry, I'm not trained for this specific topic."
 
