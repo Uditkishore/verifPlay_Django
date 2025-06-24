@@ -9,6 +9,7 @@ from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
 
 
+
 def parse_field(field_str):
     """
     Parse a field definition string like 'BUFFER_SIZE [15:0]' to extract:
@@ -264,6 +265,8 @@ def build_faiss_index():
     index.add(embeddings.cpu().numpy())
 
     return index, docs, metadatas
+
+
 
 # Answer question
 def query_documents(question, index, docs, metadatas, top_k=3):

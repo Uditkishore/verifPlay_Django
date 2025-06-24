@@ -208,8 +208,6 @@ class DrawSystemBlockAPIView(APIView):
         # Return the image file as a response
         return FileResponse(buffer, as_attachment=True, filename='system_block_diagram.png')
 
-faiss_index, faiss_docs, faiss_meta = build_faiss_index()
-
 class ChatbotView(APIView):
     def post(self, request):
         question = request.data.get("question")
@@ -217,10 +215,16 @@ class ChatbotView(APIView):
             return Response({"error": "question is required"}, status=400)
 
         try:
+            # Build index at runtime (you could later cache this if needed)
+            faiss_index, faiss_docs, faiss_meta = build_faiss_index()
+
             answer = query_documents(question, faiss_index, faiss_docs, faiss_meta)
             return Response({"answer": answer})
+        except ValueError as ve:
+            return Response({"error": str(ve)}, status=400)
         except Exception as e:
             return Response({"error": str(e)}, status=500)
+
         
 def is_probably_base64(text):
     clean = re.sub(r"<[^>]+>", "", text).strip().replace("\n", "").replace(" ", "")
@@ -233,6 +237,60 @@ def is_probably_base64(text):
         return True
     except Exception:
         return False
+
+# class UploadBase64DocumentView(APIView):
+#     def post(self, request):
+#         file_name = request.data.get("fileName")
+#         file_type = request.data.get("fileType")
+#         html_data = request.data.get("htmlData")
+#         form_data = request.data.get("formData", {})
+#         user_id = request.data.get("userId")
+#         organization = request.data.get("organization")
+
+#         # Basic validation
+#         if not file_name or not file_type:
+#             return Response({"error": "fileName and fileType are required."}, status=400)
+#         if not user_id or not organization:
+#             return Response({"error": "userId and organization are required."}, status=400)
+#         if not isinstance(file_type, str):
+#             return Response({"error": "fileType must be a string."}, status=400)
+#         if not isinstance(form_data, dict):
+#             return Response({"error": "formData must be an object."}, status=400)
+
+#         data = form_data.get("data", [])
+#         if not isinstance(data, list):
+#             return Response({"error": "formData.data must be an array."}, status=400)
+
+#         try:
+#             user_id = ObjectId(user_id)
+#         except Exception:
+#             return Response({"error": "Invalid userId format. It must be a valid ObjectId."}, status=400)
+
+#         # ⛔ Prevent plain text if fileType is pdf
+#         if file_type.lower() == "pdf" and html_data and not is_probably_base64(html_data):
+#             return Response({"error": "For PDF files, htmlData must be base64 encoded."}, status=400)
+
+#         # ✅ Create doc with correct field order
+#         doc = {
+#             "fileName": file_name,
+#             "fileType": file_type,
+#         }
+
+#         if html_data:
+#             doc["htmlData"] = html_data  # put this right after fileType
+
+#         doc.update({
+#             "formData": {"data": data},
+#             "userId": user_id,
+#             "organization": organization,
+#             "createdAt": datetime.utcnow(),
+#             "updatedAt": datetime.utcnow()
+#         })
+
+#         result = collection.insert_one(doc)
+#         doc_id = str(result.inserted_id)
+
+#         return Response({"message": "File uploaded successfully.", "id": doc_id}, status=201)
 
 class UploadBase64DocumentView(APIView):
     def post(self, request):
@@ -252,6 +310,10 @@ class UploadBase64DocumentView(APIView):
             return Response({"error": "fileType must be a string."}, status=400)
         if not isinstance(form_data, dict):
             return Response({"error": "formData must be an object."}, status=400)
+
+        # ✅ Allow only 'html' or 'pdf'
+        if file_type.lower() not in ("pdf", "html"):
+            return Response({"error": "Only 'pdf' and 'html' file types are allowed."}, status=400)
 
         data = form_data.get("data", [])
         if not isinstance(data, list):
