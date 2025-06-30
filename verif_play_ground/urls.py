@@ -28,6 +28,8 @@ urlpatterns = [
     path('drawSystemBlockAPIView/', DrawSystemBlockAPIView.as_view(), name='drawSystemBlockAPIView'),
     path('api/chat', ChatbotView.as_view(), name='chat'),
     path('api/upload', UploadBase64DocumentView.as_view(), name='upload'),
+    path("simulate/mux/download-excel", MuxSimulationExcelDownloadAPIView.as_view(), name="mux-sim-excel"),
+
 ]
 
 # Serve media files in development

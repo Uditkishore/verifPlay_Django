@@ -7,6 +7,10 @@ import torch
 import pymongo
 from bs4 import BeautifulSoup
 from sentence_transformers import SentenceTransformer
+import subprocess
+import tempfile
+from io import StringIO
+from django.conf import settings
 
 
 
@@ -287,4 +291,155 @@ def query_documents(question, index, docs, metadatas, top_k=3):
             if re.search(re.escape(question), res, re.IGNORECASE):
                 return res
         return "Sorry, I'm not trained for this specific topic."
+
+
+def run_mux_simulation(design_file, tb_file):
+    with tempfile.TemporaryDirectory() as temp_dir:
+        design_path = os.path.join(temp_dir, "mux_design.sv")
+        tb_path = os.path.join(temp_dir, "mux_tb.py")
+        makefile_path = os.path.join(temp_dir, "Makefile")
+        excel_output_path = os.path.join(temp_dir, "mux_result.xlsx")
+        vcd_output_path = os.path.join(temp_dir, "dump.vcd")
+
+        # Output files to be saved inside settings.MEDIA_ROOT
+        os.makedirs(settings.MEDIA_ROOT, exist_ok=True)
+        excel_copy_path = os.path.join(settings.MEDIA_ROOT, "mux_simulation_result.xlsx")
+        vcd_copy_path = os.path.join(settings.MEDIA_ROOT, "mux_dump.vcd")
+
+        # Save uploaded files
+        with open(design_path, 'wb') as f:
+            f.write(design_file.read())
+        with open(tb_path, 'wb') as f:
+            f.write(tb_file.read())
+
+        # Create Makefile with just filenames (not full paths)
+        makefile_content = f"""
+TOPLEVEL_LANG ?= verilog
+SIM ?= icarus
+VERILOG_SOURCES = mux_design.sv
+TOPLEVEL := mux
+MODULE := mux_tb
+
+include $(shell cocotb-config --makefiles)/Makefile.sim
+"""
+        with open(makefile_path, 'w') as f:
+            f.write(makefile_content)
+
+        # Convert Windows path to WSL format: C:\Users\hi\... -> /mnt/c/Users/hi/...
+        wsl_path = temp_dir.replace("\\", "/").replace(":", "")
+        wsl_path = "/mnt/" + wsl_path[0].lower() + wsl_path[1:]
+
+        # Correct subprocess call: export PATH and run inside bash correctly
+        result = subprocess.run(
+            ["wsl", "bash", "-c", f"export PATH=\"$HOME/.local/bin:$PATH\" && cd '{wsl_path}' && make sim=icarus"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+
+        if result.returncode != 0:
+            return {"error": "Simulation failed", "output": result.stderr}
+
+        output = result.stdout
+
+        # Parse lines like: a: 44 b: 177 c: 95 d: 253 sel: 3 dout: 253
+        pattern = re.compile(r"a: (\d+) b: (\d+) c: (\d+) d: (\d+) sel: (\d+) dout: (\d+)")
+        rows = pattern.findall(output)
+
+        if not rows:
+            return {"error": "No waveform-style data found in simulation output", "output": output}
+
+        df = pd.DataFrame(rows, columns=["a", "b", "c", "d", "sel", "dout"])
+        df.to_excel(excel_output_path, index=False)
+
+        # Save Excel to media folder
+        with open(excel_output_path, 'rb') as fsrc, open(excel_copy_path, 'wb') as fdst:
+            fdst.write(fsrc.read())
+
+        # Copy VCD to media folder
+        if os.path.exists(vcd_output_path):
+            with open(vcd_output_path, 'rb') as fsrc, open(vcd_copy_path, 'wb') as fdst:
+                fdst.write(fsrc.read())
+
+        return {
+            "message": "Simulation successful",
+            "excel_file": settings.MEDIA_URL + "mux_simulation_result.xlsx",
+            "vcd_file": settings.MEDIA_URL + "mux_dump.vcd",
+            "stdout": output,
+            "df": df
+        }
+
+# def run_mux_simulation(design_file, tb_file):
+#     with tempfile.TemporaryDirectory() as temp_dir:
+#         design_path = os.path.join(temp_dir, "mux_design.sv")
+#         tb_path = os.path.join(temp_dir, "mux_tb.py")
+#         makefile_path = os.path.join(temp_dir, "Makefile")
+#         excel_output_path = os.path.join(temp_dir, "mux_result.xlsx")
+#         vcd_output_path = os.path.join(temp_dir, "dump.vcd")
+#         vcd_copy_path = os.path.join("media", "mux_dump.vcd")
+
+#         # Save uploaded files
+#         with open(design_path, 'wb') as f:
+#             f.write(design_file.read())
+#         with open(tb_path, 'wb') as f:
+#             f.write(tb_file.read())
+
+#         # Create Makefile with just filenames (not full paths)
+#         makefile_content = f"""
+# TOPLEVEL_LANG ?= verilog
+# SIM ?= icarus
+# VERILOG_SOURCES = mux_design.sv
+# TOPLEVEL := mux
+# MODULE := mux_tb
+
+# include $(shell cocotb-config --makefiles)/Makefile.sim
+# """
+#         with open(makefile_path, 'w') as f:
+#             f.write(makefile_content)
+
+#         # Convert Windows path to WSL format: C:\Users\hi\... -> /mnt/c/Users/hi/...
+#         wsl_path = temp_dir.replace("\\", "/").replace(":", "")
+#         wsl_path = "/mnt/" + wsl_path[0].lower() + wsl_path[1:]
+
+#         # Correct subprocess call: export PATH and run inside bash correctly
+#         result = subprocess.run(
+#             ["wsl", "bash", "-c", f"export PATH=\"$HOME/.local/bin:$PATH\" && cd '{wsl_path}' && make sim=icarus"],
+#             stdout=subprocess.PIPE,
+#             stderr=subprocess.PIPE,
+#             text=True
+#         )
+
+#         if result.returncode != 0:
+#             return {"error": "Simulation failed", "output": result.stderr}
+
+#         output = result.stdout
+
+#         # Parse lines like: a: 44 b: 177 c: 95 d: 253 sel: 3 dout: 253
+#         pattern = re.compile(r"a: (\d+) b: (\d+) c: (\d+) d: (\d+) sel: (\d+) dout: (\d+)")
+#         rows = pattern.findall(output)
+
+#         if not rows:
+#             return {"error": "No waveform-style data found in simulation output", "output": output}
+
+#         df = pd.DataFrame(rows, columns=["a", "b", "c", "d", "sel", "dout"])
+#         df.to_excel(excel_output_path, index=False)
+
+#         os.makedirs("media", exist_ok=True)
+#         # Copy Excel to media
+#         excel_copy_path = os.path.join("media", "mux_simulation_result.xlsx")
+#         with open(excel_output_path, 'rb') as fsrc, open(excel_copy_path, 'wb') as fdst:
+#             fdst.write(fsrc.read())
+        
+#         # Copy VCD to media if it exists
+#         if os.path.exists(vcd_output_path):
+#             with open(vcd_output_path, 'rb') as fsrc, open(vcd_copy_path, 'wb') as fdst:
+#                 fdst.write(fsrc.read())
+
+#         return {
+#             "excel_path": excel_copy_path,
+#             "excel_path": excel_output_path,
+#             "vcd_path": vcd_copy_path if os.path.exists(vcd_copy_path) else None,
+#             "df": df,
+#             "stdout": output
+#         }
 

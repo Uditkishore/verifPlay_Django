@@ -110,6 +110,9 @@ ENV/
 env.bak/
 venv.bak/
 
+#requirements.txt
+requirements.txt
+
 # IDE and editor settings
 ## Spyder
 .spyderproject

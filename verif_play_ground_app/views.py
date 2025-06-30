@@ -4,7 +4,7 @@ from rest_framework.parsers import MultiPartParser, FormParser
 from rest_framework import status
 from rest_framework.exceptions import ValidationError
 from .utils import *
-from django.http import FileResponse
+from django.http import FileResponse, JsonResponse
 from django.shortcuts import render
 import base64
 import os
@@ -17,6 +17,8 @@ from rest_framework.exceptions import ValidationError
 from bson import ObjectId
 from datetime import datetime
 import re
+
+
 
 
 def home(request):
@@ -238,60 +240,6 @@ def is_probably_base64(text):
     except Exception:
         return False
 
-# class UploadBase64DocumentView(APIView):
-#     def post(self, request):
-#         file_name = request.data.get("fileName")
-#         file_type = request.data.get("fileType")
-#         html_data = request.data.get("htmlData")
-#         form_data = request.data.get("formData", {})
-#         user_id = request.data.get("userId")
-#         organization = request.data.get("organization")
-
-#         # Basic validation
-#         if not file_name or not file_type:
-#             return Response({"error": "fileName and fileType are required."}, status=400)
-#         if not user_id or not organization:
-#             return Response({"error": "userId and organization are required."}, status=400)
-#         if not isinstance(file_type, str):
-#             return Response({"error": "fileType must be a string."}, status=400)
-#         if not isinstance(form_data, dict):
-#             return Response({"error": "formData must be an object."}, status=400)
-
-#         data = form_data.get("data", [])
-#         if not isinstance(data, list):
-#             return Response({"error": "formData.data must be an array."}, status=400)
-
-#         try:
-#             user_id = ObjectId(user_id)
-#         except Exception:
-#             return Response({"error": "Invalid userId format. It must be a valid ObjectId."}, status=400)
-
-#         # ⛔ Prevent plain text if fileType is pdf
-#         if file_type.lower() == "pdf" and html_data and not is_probably_base64(html_data):
-#             return Response({"error": "For PDF files, htmlData must be base64 encoded."}, status=400)
-
-#         # ✅ Create doc with correct field order
-#         doc = {
-#             "fileName": file_name,
-#             "fileType": file_type,
-#         }
-
-#         if html_data:
-#             doc["htmlData"] = html_data  # put this right after fileType
-
-#         doc.update({
-#             "formData": {"data": data},
-#             "userId": user_id,
-#             "organization": organization,
-#             "createdAt": datetime.utcnow(),
-#             "updatedAt": datetime.utcnow()
-#         })
-
-#         result = collection.insert_one(doc)
-#         doc_id = str(result.inserted_id)
-
-#         return Response({"message": "File uploaded successfully.", "id": doc_id}, status=201)
-
 class UploadBase64DocumentView(APIView):
     def post(self, request):
         file_name = request.data.get("fileName")
@@ -349,3 +297,48 @@ class UploadBase64DocumentView(APIView):
         doc_id = str(result.inserted_id)
 
         return Response({"message": "File uploaded successfully.", "id": doc_id}, status=201)
+
+class MuxSimulationExcelDownloadAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        design_file = request.FILES.get("design_file")
+        tb_file = request.FILES.get("tb_file")
+
+        if not design_file or not tb_file:
+            return Response({"error": "Both design_file and tb_file are required."}, status=400)
+
+        result = run_mux_simulation(design_file, tb_file)
+
+        if "error" in result:
+            return Response(result, status=500)
+
+        # Return both Excel and optional VCD path as a JSON response
+        return JsonResponse({
+            "message": "Simulation successful",
+            "excel_file": request.build_absolute_uri("/media/mux_simulation_result.xlsx"),
+            "vcd_file": request.build_absolute_uri("/media/mux_dump.vcd") if result["vcd_file"] else None,
+            "stdout": result["stdout"]
+        })
+
+# class MuxSimulationExcelDownloadAPIView(APIView):
+#     parser_classes = (MultiPartParser, FormParser)
+
+#     def post(self, request):
+#         design_file = request.FILES.get("design_file")
+#         tb_file = request.FILES.get("tb_file")
+
+#         if not design_file or not tb_file:
+#             return Response({"error": "Both design_file and tb_file are required."},
+#                             status=status.HTTP_400_BAD_REQUEST)
+
+#         result = run_mux_simulation(design_file, tb_file)
+
+#         if "error" in result:
+#             return Response(result, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+#         return FileResponse(
+#             open(result["excel_path"], "rb"),
+#             as_attachment=True,
+#             filename="mux_simulation_result.xlsx"
+#         )

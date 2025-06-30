@@ -15,7 +15,7 @@ from dotenv import load_dotenv
 import os
 import pymongo
 from pathlib import Path
-
+from decouple import config
 
 load_dotenv()
 
@@ -93,7 +93,7 @@ WSGI_APPLICATION = 'verif_play_ground.wsgi.application'
 # }
 
 MONGO_URI = os.getenv("MONGO_URI")
-DB_NAME = os.getenv("MONGO_DB_NAME")
+DB_NAME = config("DB_NAME", default="verif_playground")
 
 # Connect to MongoDB
 client = pymongo.MongoClient(MONGO_URI)
