@@ -4,6 +4,7 @@ asgiref==3.8.1
 beautifulsoup4==4.13.4
 certifi==2025.6.15
 charset-normalizer==3.4.2
+click==8.2.1
 cocotb==1.9.2
 colorama==0.4.6
 contourpy==1.3.2
@@ -34,6 +35,7 @@ MarkupSafe==3.0.2
 matplotlib==3.10.1
 mpmath==1.3.0
 networkx==3.5
+nltk==3.9.1
 numpy==2.2.1
 openpyxl==3.1.5
 orjson==3.10.18
@@ -43,6 +45,7 @@ pillow==11.2.1
 pydantic==2.11.7
 pydantic_core==2.33.2
 pymongo==4.13.2
+PyMuPDF==1.26.1
 pyparsing==3.2.3
 python-dateutil==2.9.0.post0
 python-decouple==3.8

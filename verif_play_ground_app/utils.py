@@ -11,7 +11,8 @@ import subprocess
 import tempfile
 from io import StringIO
 from django.conf import settings
-
+import faiss
+import fitz 
 
 
 def parse_field(field_str):
@@ -202,6 +203,8 @@ def excel_to_uvm_ral(excel_file, output_file):
     except Exception as e:
         print(f"Error: {e}")
 
+
+# MongoDB setup
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 client = pymongo.MongoClient(MONGO_URI)
 db = client["Verif_Playground"]
@@ -210,11 +213,20 @@ collection = db.get_collection("scripts")
 # Embedding model
 model = SentenceTransformer("all-MiniLM-L6-v2")
 
-# Helper functions
+# Extract plain text from HTML
 def extract_text_from_html(html):
     soup = BeautifulSoup(html, "html.parser")
     return soup.get_text(separator="\n").strip()
 
+# Extract plain text from PDF bytes
+def extract_text_from_pdf_bytes(pdf_bytes):
+    try:
+        with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
+            return "\n".join(page.get_text() for page in doc)
+    except Exception:
+        return ""
+
+# Detect if a string is base64
 def is_base64(text):
     clean = re.sub(r"<[^>]+>", "", text).strip().replace("\n", "").replace(" ", "")
     if len(clean) < 100:
@@ -222,76 +234,105 @@ def is_base64(text):
     try:
         base64.b64decode(clean, validate=True)
         return True
-    except:
+    except Exception:
         return False
 
+# Decode base64 safely
 def decode_base64(text):
     try:
         padded = text + "=" * (-len(text) % 4)
-        return base64.b64decode(padded).decode("utf-8", errors="ignore")
-    except:
+        return base64.b64decode(padded)
+    except Exception:
         return None
 
-# Build index
+# Split long text into chunks
+def chunk_text(text, chunk_size=500, overlap=100):
+    words = text.split()
+    chunks = []
+    for i in range(0, len(words), chunk_size - overlap):
+        chunk = " ".join(words[i:i + chunk_size])
+        if chunk:
+            chunks.append(chunk.strip())
+    return chunks
+
+# Build FAISS index
 def build_faiss_index():
     docs = []
     metadatas = []
 
     for doc in collection.find():
+        file_type = doc.get("fileType", "").lower()
         html_data = doc.get("htmlData", "")
-        if not html_data:
-            continue
+        base64_data = doc.get("base64", "")
 
-        # Try decoding base64, else treat as plain HTML
-        if is_base64(html_data):
-            decoded = decode_base64(html_data)
-            if not decoded:
-                continue
-            text = extract_text_from_html(decoded)
-        else:
-            text = extract_text_from_html(html_data)
+        text = ""
+        if file_type == "html":
+            if is_base64(html_data):
+                decoded = decode_base64(html_data)
+                if decoded:
+                    text = extract_text_from_html(decoded.decode("utf-8", errors="ignore"))
+            else:
+                text = extract_text_from_html(html_data)
+
+        elif file_type == "pdf":
+            if is_base64(base64_data):
+                decoded = decode_base64(base64_data)
+                if decoded:
+                    text = extract_text_from_pdf_bytes(decoded)
+                    if not text.strip():
+                        # text = extract_text_from_html(decoded.decode("utf-8", errors="ignore"))
+                        continue
 
         if not text.strip():
             continue
 
-        docs.append(text)
-        metadatas.append({
-            "_id": str(doc["_id"]),
-            "fileName": doc.get("fileName", "unknown")
-        })
+        for chunk in chunk_text(text):
+            docs.append(chunk)
+            metadatas.append({
+                "_id": str(doc.get("_id")),
+                "fileName": doc.get("fileName", "unknown")
+            })
 
-    # Generate embeddings
     if not docs:
         raise ValueError("No valid documents found to index.")
-    
+
     embeddings = model.encode(docs, convert_to_tensor=True)
     index = faiss.IndexFlatL2(embeddings.shape[1])
     index.add(embeddings.cpu().numpy())
 
     return index, docs, metadatas
 
-
-
-# Answer question
+# Search documents
 def query_documents(question, index, docs, metadatas, top_k=3):
+    if index is None:
+        return "Error: FAISS index not initialized."
+
     q_embedding = model.encode([question])
     D, I = index.search(q_embedding, top_k)
     results = [docs[i] for i in I[0]]
     scores = D[0]
 
-    # Check distance thresholds (smaller is better in L2)
     best_score = scores[0]
     best_result = results[0]
 
-    # Tune threshold as needed (e.g. 1.5 for MiniLM)
-    if best_score < 1.5:
+    if best_score < 1.6:
         return best_result
-    else:
-        for res in results:
-            if re.search(re.escape(question), res, re.IGNORECASE):
-                return res
-        return "Sorry, I'm not trained for this specific topic."
 
+    question_keywords = re.findall(r"\w+", question.lower())
+    for doc in docs:
+        doc_lower = doc.lower()
+        if any(word in doc_lower for word in question_keywords):
+            return doc
+
+    return "Sorry, I'm not trained for this specific topic."
+
+# On module import, build index
+try:
+    faiss_index, faiss_docs, faiss_meta = build_faiss_index()
+except Exception:
+    faiss_index = None
+    faiss_docs = []
+    faiss_meta = []
 
 def run_mux_simulation(design_file, tb_file):
     with tempfile.TemporaryDirectory() as temp_dir:
@@ -368,78 +409,3 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
             "stdout": output,
             "df": df
         }
-
-# def run_mux_simulation(design_file, tb_file):
-#     with tempfile.TemporaryDirectory() as temp_dir:
-#         design_path = os.path.join(temp_dir, "mux_design.sv")
-#         tb_path = os.path.join(temp_dir, "mux_tb.py")
-#         makefile_path = os.path.join(temp_dir, "Makefile")
-#         excel_output_path = os.path.join(temp_dir, "mux_result.xlsx")
-#         vcd_output_path = os.path.join(temp_dir, "dump.vcd")
-#         vcd_copy_path = os.path.join("media", "mux_dump.vcd")
-
-#         # Save uploaded files
-#         with open(design_path, 'wb') as f:
-#             f.write(design_file.read())
-#         with open(tb_path, 'wb') as f:
-#             f.write(tb_file.read())
-
-#         # Create Makefile with just filenames (not full paths)
-#         makefile_content = f"""
-# TOPLEVEL_LANG ?= verilog
-# SIM ?= icarus
-# VERILOG_SOURCES = mux_design.sv
-# TOPLEVEL := mux
-# MODULE := mux_tb
-
-# include $(shell cocotb-config --makefiles)/Makefile.sim
-# """
-#         with open(makefile_path, 'w') as f:
-#             f.write(makefile_content)
-
-#         # Convert Windows path to WSL format: C:\Users\hi\... -> /mnt/c/Users/hi/...
-#         wsl_path = temp_dir.replace("\\", "/").replace(":", "")
-#         wsl_path = "/mnt/" + wsl_path[0].lower() + wsl_path[1:]
-
-#         # Correct subprocess call: export PATH and run inside bash correctly
-#         result = subprocess.run(
-#             ["wsl", "bash", "-c", f"export PATH=\"$HOME/.local/bin:$PATH\" && cd '{wsl_path}' && make sim=icarus"],
-#             stdout=subprocess.PIPE,
-#             stderr=subprocess.PIPE,
-#             text=True
-#         )
-
-#         if result.returncode != 0:
-#             return {"error": "Simulation failed", "output": result.stderr}
-
-#         output = result.stdout
-
-#         # Parse lines like: a: 44 b: 177 c: 95 d: 253 sel: 3 dout: 253
-#         pattern = re.compile(r"a: (\d+) b: (\d+) c: (\d+) d: (\d+) sel: (\d+) dout: (\d+)")
-#         rows = pattern.findall(output)
-
-#         if not rows:
-#             return {"error": "No waveform-style data found in simulation output", "output": output}
-
-#         df = pd.DataFrame(rows, columns=["a", "b", "c", "d", "sel", "dout"])
-#         df.to_excel(excel_output_path, index=False)
-
-#         os.makedirs("media", exist_ok=True)
-#         # Copy Excel to media
-#         excel_copy_path = os.path.join("media", "mux_simulation_result.xlsx")
-#         with open(excel_output_path, 'rb') as fsrc, open(excel_copy_path, 'wb') as fdst:
-#             fdst.write(fsrc.read())
-        
-#         # Copy VCD to media if it exists
-#         if os.path.exists(vcd_output_path):
-#             with open(vcd_output_path, 'rb') as fsrc, open(vcd_copy_path, 'wb') as fdst:
-#                 fdst.write(fsrc.read())
-
-#         return {
-#             "excel_path": excel_copy_path,
-#             "excel_path": excel_output_path,
-#             "vcd_path": vcd_copy_path if os.path.exists(vcd_copy_path) else None,
-#             "df": df,
-#             "stdout": output
-#         }
-

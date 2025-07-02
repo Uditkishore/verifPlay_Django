@@ -26,8 +26,7 @@ urlpatterns = [
     path('generate-uvm-ral/', UvmRalGeneratorView.as_view(), name='generate-uvm-ral'),
     path('generate-uvm-ral-base/', UvmRalGeneratorbase64View.as_view(), name='generate-uvm-ral-base'),
     path('drawSystemBlockAPIView/', DrawSystemBlockAPIView.as_view(), name='drawSystemBlockAPIView'),
-    path('api/chat', ChatbotView.as_view(), name='chat'),
-    path('api/upload', UploadBase64DocumentView.as_view(), name='upload'),
+    path('api/chat', ChatAPIView.as_view(), name='chat'),
     path("simulate/mux/download-excel", MuxSimulationExcelDownloadAPIView.as_view(), name="mux-sim-excel"),
 
 ]
