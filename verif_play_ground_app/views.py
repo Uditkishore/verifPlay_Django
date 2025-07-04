@@ -247,3 +247,17 @@ class MuxSimulationExcelDownloadAPIView(APIView):
             "vcd_file": request.build_absolute_uri("/media/mux_dump.vcd") if result["vcd_file"] else None,
             "stdout": result["stdout"]
         })
+    
+
+
+
+
+
+
+
+
+
+
+
+
+    
