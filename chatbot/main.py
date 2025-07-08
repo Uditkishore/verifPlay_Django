@@ -4,13 +4,17 @@ from llama_cpp import Llama
 import os
 import sys
 from colorama import Fore, Style, init
+import warnings
+import logging
+logging.getLogger("llama_cpp").setLevel(logging.CRITICAL)
 
+warnings.filterwarnings("ignore", category=DeprecationWarning)
 init(autoreset=True)
 
 # Load vector DB
 print(Fore.YELLOW + "Loading vector database...")
 embedding = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
-db = Chroma(persist_directory="embeddings", embedding_function=embedding)
+db = Chroma(persist_directory="chatbot/embeddings", embedding_function=embedding)
 retriever = db.as_retriever(search_kwargs={"k": 3})
 print(Fore.GREEN + "Vector DB loaded.")
 
@@ -21,7 +25,8 @@ llm = Llama(
     model_path=model_path,
     n_ctx=2048,
     n_threads=6,
-    use_mlock=True
+    use_mlock=True,
+    verbose=False
 )
 print(Fore.GREEN + "Model loaded. You can now chat with your documents.")
 
@@ -34,13 +39,19 @@ try:
             break
 
         docs = retriever.get_relevant_documents(query)
-        if not docs:
-            print(Fore.RED + "No relevant context found in documents.")
-            continue
+        if not docs or all(not doc.page_content.strip() for doc in docs):
+            prompt = f"""
+You are a friendly assistant. The user asked something casual or not covered by the documents.
+Please respond kindly and helpfully, even without context.
 
-        context = "\n".join([doc.page_content for doc in docs])
+[Question]
+{query}
 
-        prompt = f"""
+Answer:"""
+        else:
+            # Normal doc-based prompt
+            context = "\n".join([doc.page_content for doc in docs])
+            prompt = f"""
 You are a helpful assistant. Use the provided context to answer the user's question.
 
 [Context]
@@ -51,6 +62,7 @@ You are a helpful assistant. Use the provided context to answer the user's quest
 
 Answer:"""
 
+        # Get LLM response
         response = llm(prompt, max_tokens=512, stop=["</s>"])
         answer = response["choices"][0]["text"].strip()
 
@@ -59,3 +71,4 @@ Answer:"""
 except KeyboardInterrupt:
     print(Fore.YELLOW + "\n\nExited via keyboard. Bye!")
     sys.exit(0)
+
