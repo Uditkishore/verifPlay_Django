@@ -1,79 +1,97 @@
+#run "npm install -g wavedrom-cli" to install wavedrom-cli
+#run "pip install pandas openpyxl" to install required packages 
+#please ensure wavedrom-cli is in your PATH, you can use "C:\Users\YourUsername\AppData\Roaming\npm" for Windows or "/usr/local/bin" for Linux/MacOS
+
 import pandas as pd
-from bokeh.plotting import figure, show
-from bokeh.models import Range1d, Label
+import json
+import subprocess
+import os
+import shutil
 
-def plot_digital_waveforms_bokeh(data, data_buses):
+def convert_to_wavejson(data, data_buses):
+    wavejson = {"signal": []}
+    num_timepoints = len(data)
+
+    for bus in data_buses:
+        signal_line = {"name": bus, "wave": ""}
+        values = [str(v).strip().upper() for v in data[bus].tolist()]
+        wave_data = []
+
+        last_val = None
+        for val in values:
+            if val in {"0", "1"}:
+                if val == last_val:
+                    signal_line["wave"] += "."
+                else:
+                    signal_line["wave"] += val
+                wave_data.append(None)
+                last_val = val
+            elif val == "X":
+                signal_line["wave"] += "x"
+                wave_data.append(None)
+                last_val = val
+            elif val == "Z":
+                signal_line["wave"] += "z"
+                wave_data.append(None)
+                last_val = val
+            else:
+                if last_val == val:
+                    signal_line["wave"] += "."
+                    wave_data.append(None)
+                else:
+                    signal_line["wave"] += "="
+                    wave_data.append(val)
+                    last_val = val
+
+        assert len(signal_line["wave"]) == num_timepoints, f"{bus} has mismatch in waveform length"
+
+        if '=' in signal_line["wave"]:
+            signal_line["data"] = [d for w, d in zip(signal_line["wave"], wave_data) if w == '=' and d is not None]
+
+        wavejson["signal"].append(signal_line)
+
+    return wavejson
+
+
+if __name__ == "__main__":
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    file_path = os.path.join(script_dir, "Extended_Waveform_Andgate.xlsx")
+    output_json = os.path.join(script_dir, "waveform.json")
+    output_png = os.path.join(script_dir, "waveform.png")
+    output_svg = os.path.join(script_dir, "waveform.svg")
+
     try:
-        required_columns = ["Time"] + data_buses  # Dynamic required columns
-        for col in required_columns:
-            if col not in data.columns:
-                raise ValueError(f"Column '{col}' not found in the data.")
+        # ✅ Load Excel and infer headers as data buses
+        data = pd.read_excel(file_path, engine="openpyxl")
+        data_buses = list(data.columns)
+        print(f"✅ Detected data buses: {data_buses}")
 
-        time = data["Time"]
-        num_time_points = len(time)
+        wavejson = convert_to_wavejson(data, data_buses)
 
-        num_buses = len(data_buses)  # Number of data buses
+        with open(output_json, "w") as f:
+            json.dump(wavejson, f, indent=2)
+        print("✅ waveform.json created successfully!")
 
-        p = figure(
-            title="Digital Waveform Plot",
-            x_range=Range1d(-1, num_time_points),
-            y_range=(-1, 2 * num_buses - 1),  # Dynamic y-range
-            x_axis_label="Time",
-            width=1200, height=600
+        wavedrom_path = shutil.which("wavedrom-cli")
+        if not wavedrom_path:
+            raise FileNotFoundError("wavedrom-cli not found in PATH. Please install it and check your environment.")
+
+        print(f"wavedrom-cli found at: {wavedrom_path}")
+
+        # ✅ Generate PNG instead of SVG
+        subprocess.run(
+            [wavedrom_path, "-i", output_json, "-p", output_png],
+            check=True,
+            shell=True
         )
+        subprocess.run(
+            [wavedrom_path, "-i", output_json, "-p", output_svg],
+            check=True,
+            shell=True
+        )
+        print(f"✅ waveform.png created successfully!")
 
-        p.xgrid.grid_line_color = 'lightgray'
-        p.background_fill_color = "white"
-
-        for idx, bus_name in enumerate(data_buses):
-            bus_data = data[bus_name]
-            try:
-                bus_data = pd.to_numeric(bus_data)
-            except ValueError:
-                bus_data = bus_data.apply(lambda x: 1 if 'D[A' in str(x) or str(x) == 'A' else 0)
-
-            y_offset = 2 * idx
-            y_values = [bus_data[i] + y_offset for i in range(num_time_points)]
-
-            # Draw background patches
-            for i in range(num_time_points):
-                p.patch([i - 0.5, i + 0.5, i + 0.5, i - 0.5], [y_offset - 0.5, y_offset - 0.5, y_offset + 0.5, y_offset + 0.5], color="lightgray", alpha=0.5, line_width=0)
-
-            # Draw Signal Lines
-            for i in range(num_time_points - 1):
-                x0 = i
-                y0 = y_values[i]
-                x1 = i + 1
-                y1 = y_values[i]
-                p.segment(x0=x0, y0=y0, x1=x1, y1=y1, color="black", line_width=2)
-                if y_values[i] != y_values[i + 1]:
-                    p.segment(x0=x1, y0=y0, x1=x1, y1=y_values[i + 1], color="black", line_width=2)
-
-            # Add signal labels to the left
-            label = Label(x=-0.7, y=y_offset, text=bus_name, x_offset=-10, y_offset=0, text_align="right")
-            p.add_layout(label)
-
-        p.xaxis.ticker = list(range(num_time_points))
-        p.xaxis.major_label_overrides = {i: time[i] for i in range(num_time_points)}
-        p.yaxis.major_tick_line_color = None
-        p.yaxis.minor_tick_line_color = None
-        p.yaxis.major_label_text_font_size = '0pt'
-        p.yaxis.axis_line_color = None
-
-        show(p)
-
+    except subprocess.CalledProcessError as e:
+        print(f"❌ Error generating PNG: {e}")
     except Exception as e:
-        print(f"An error occurred during plotting: {e}")
-
-if __name__ == "__main__":  # Corrected the name to __name__
-    file_path = "temp_test/Waveform_create_Andgate.xls"
-    data_buses = ["ACLK", "ARADDR", "ARVALID", "ARREADY", "RDATA", "RLAST", "RVALID", "RREADY"]  # Define your data buses here
-    try:
-        data = pd.read_excel(file_path, engine='xlrd')
-        plot_digital_waveforms_bokeh(data, data_buses)  # Pass data_buses to the function
-    except FileNotFoundError:
-        print(f"Error: File not found at {file_path}. Please check the path.")
-    except pd.errors.ParserError:
-        print(f"Error: Could not parse the Excel file at {file_path}. Check file format or contents.")
-    except Exception as e:
-        print(f"An unexpected error occurred during file processing: {e}")
+        print(f"❌ An error occurred: {e}")
