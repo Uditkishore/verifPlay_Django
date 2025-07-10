@@ -55,7 +55,7 @@ def convert_to_wavejson(data, data_buses):
 
 if __name__ == "__main__":
     script_dir = os.path.dirname(os.path.abspath(__file__))
-    file_path = os.path.join(script_dir, "Extended_Waveform_Andgate.xlsx")
+    file_path = os.path.join(script_dir, "temp_test/Extended_Waveform_Andgate.xlsx")
     output_json = os.path.join(script_dir, "waveform.json")
     output_png = os.path.join(script_dir, "waveform.png")
     output_svg = os.path.join(script_dir, "waveform.svg")

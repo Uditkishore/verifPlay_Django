@@ -210,21 +210,49 @@ class DrawSystemBlockAPIView(APIView):
         # Return the image file as a response
         return FileResponse(buffer, as_attachment=True, filename='system_block_diagram.png')
 
-        
+    
+
 class ChatAPIView(APIView):
+    """
+    Simplified Chat API that uses MongoDB-stored documents
+    (Documents are added directly to MongoDB, not through this API)
+    """
+    
     def post(self, request):
+        """
+        Handle chatbot queries
+        Request format:
+        {
+            "question": "Your question here"
+        }
+        """
         question = request.data.get("question")
-
-        if not question:
-            return Response({"error": "Question is required."}, status=status.HTTP_400_BAD_REQUEST)
-
+        
+        if not question or not isinstance(question, str):
+            return Response(
+                {"error": "A valid question string is required"},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
         try:
-            # Use the pre-built FAISS index from utils.py
-            answer = query_documents(question, faiss_index, faiss_docs, faiss_meta)
-            return Response({"answer": answer})
+            # Get response from utils.py's chatbot function
+            answer = get_chatbot_response(question)
+            
+            return Response({
+                "answer": answer,
+                "status": "success"
+            })
+            
         except Exception as e:
-            return Response({"error": str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
-
+            return Response(
+                {
+                    "error": "Failed to process question",
+                    "details": str(e),
+                    "status": "error"
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+        
 class MuxSimulationExcelDownloadAPIView(APIView):
     parser_classes = (MultiPartParser, FormParser)
 

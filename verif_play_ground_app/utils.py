@@ -2,18 +2,21 @@ import pandas as pd
 import re
 import os
 import base64
-import faiss
 import torch
 import pymongo
 from bs4 import BeautifulSoup
-from sentence_transformers import SentenceTransformer
 import subprocess
 import tempfile
 from io import StringIO
 from django.conf import settings
-import faiss
-import fitz 
-
+import logging
+import fitz
+from langchain.schema import Document
+from langchain_community.vectorstores import Chroma
+from langchain_huggingface import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from llama_cpp import Llama
+from typing import List, Dict, Optional
 
 def parse_field(field_str):
     """
@@ -203,22 +206,22 @@ def excel_to_uvm_ral(excel_file, output_file):
     except Exception as e:
         print(f"Error: {e}")
 
+logging.getLogger("llama_cpp").setLevel(logging.CRITICAL)
 
-# MongoDB setup
+# MongoDB connection setup
 MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/")
 client = pymongo.MongoClient(MONGO_URI)
 db = client["Verif_Playground"]
-collection = db.get_collection("scripts")
+scripts_collection = db.get_collection("scripts")
 
-# Embedding model
-model = SentenceTransformer("all-MiniLM-L6-v2")
+# Initialize embedding model
+model = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-# Extract plain text from HTML
+# Your existing text processing functions
 def extract_text_from_html(html):
     soup = BeautifulSoup(html, "html.parser")
     return soup.get_text(separator="\n").strip()
 
-# Extract plain text from PDF bytes
 def extract_text_from_pdf_bytes(pdf_bytes):
     try:
         with fitz.open(stream=pdf_bytes, filetype="pdf") as doc:
@@ -226,7 +229,6 @@ def extract_text_from_pdf_bytes(pdf_bytes):
     except Exception:
         return ""
 
-# Detect if a string is base64
 def is_base64(text):
     clean = re.sub(r"<[^>]+>", "", text).strip().replace("\n", "").replace(" ", "")
     if len(clean) < 100:
@@ -237,102 +239,143 @@ def is_base64(text):
     except Exception:
         return False
 
-# Decode base64 safely
 def decode_base64(text):
     try:
-        padded = text + "=" * (-len(text) % 4)
+        padded = text + "=" * (-len(text) % 4)  # Correct parentheses
         return base64.b64decode(padded)
     except Exception:
         return None
 
-# Split long text into chunks
-def chunk_text(text, chunk_size=500, overlap=100):
-    words = text.split()
-    chunks = []
-    for i in range(0, len(words), chunk_size - overlap):
-        chunk = " ".join(words[i:i + chunk_size])
-        if chunk:
-            chunks.append(chunk.strip())
-    return chunks
-
-# Build FAISS index
-def build_faiss_index():
-    docs = []
-    metadatas = []
-
-    for doc in collection.find():
-        file_type = doc.get("fileType", "").lower()
-        html_data = doc.get("htmlData", "")
-        base64_data = doc.get("base64", "")
-
-        text = ""
+def process_mongodb_document(doc: Dict) -> Optional[Document]:
+    """Process a MongoDB document into a Langchain Document with plain text content"""
+    file_type = doc.get("fileType", "").lower()
+    html_data = doc.get("htmlData", "")
+    base64_data = doc.get("base64", "")
+    text = ""
+    
+    try:
+        # Process HTML documents
         if file_type == "html":
-            if is_base64(html_data):
-                decoded = decode_base64(html_data)
-                if decoded:
-                    text = extract_text_from_html(decoded.decode("utf-8", errors="ignore"))
-            else:
-                text = extract_text_from_html(html_data)
-
-        elif file_type == "pdf":
+            if html_data:
+                if is_base64(html_data):
+                    decoded = decode_base64(html_data)
+                    if decoded:
+                        text = extract_text_from_html(decoded.decode("utf-8", errors="ignore"))
+                else:
+                    text = extract_text_from_html(html_data)
+        
+        # Process PDF documents (must be base64 encoded)
+        elif file_type == "pdf" and base64_data:
             if is_base64(base64_data):
                 decoded = decode_base64(base64_data)
                 if decoded:
                     text = extract_text_from_pdf_bytes(decoded)
-                    if not text.strip():
-                        # text = extract_text_from_html(decoded.decode("utf-8", errors="ignore"))
-                        continue
-
+        
         if not text.strip():
-            continue
-
-        for chunk in chunk_text(text):
-            docs.append(chunk)
-            metadatas.append({
+            return None
+            
+        return Document(
+            page_content=text,
+            metadata={
                 "_id": str(doc.get("_id")),
-                "fileName": doc.get("fileName", "unknown")
-            })
+                "fileName": doc.get("fileName", "unknown"),
+                "fileType": file_type
+            }
+        )
+    except Exception as e:
+        print(f"Error processing document {doc.get('_id')}: {str(e)}")
+        return None
 
-    if not docs:
-        raise ValueError("No valid documents found to index.")
+def initialize_mongodb_vector_db():
+    """Initialize vector database from MongoDB documents"""
+    try:
+        # Load and process documents
+        documents = []
+        for doc in scripts_collection.find():
+            processed = process_mongodb_document(doc)
+            if processed:
+                documents.append(processed)
+        
+        if not documents:
+            raise ValueError("No valid documents found in MongoDB")
+        
+        # Split documents into chunks
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50
+        )
+        split_documents = splitter.split_documents(documents)
+        
+        # Create vector store (remove .persist() call)
+        vector_db = Chroma.from_documents(
+            documents=split_documents,
+            embedding=model,
+            persist_directory="chatbot/embeddings"  # Chroma will auto-persist here
+        )
+        
+        return vector_db.as_retriever(search_kwargs={"k": 3})
+    
+    except Exception as e:
+        print(f"Error initializing vector DB: {str(e)}")
+        return None
 
-    embeddings = model.encode(docs, convert_to_tensor=True)
-    index = faiss.IndexFlatL2(embeddings.shape[1])
-    index.add(embeddings.cpu().numpy())
+def initialize_llm():
+    """Initialize and return the LLM model"""
+    try:
+        model_path = os.path.join("chatbot/models", "mistral-7b-instruct-v0.1.Q4_K_M.gguf")
+        return Llama(
+            model_path=model_path,
+            n_ctx=2048,
+            n_threads=6,
+            use_mlock=True,
+            verbose=False
+        )
+    except Exception as e:
+        print(f"Error initializing LLM: {str(e)}")
+        return None
 
-    return index, docs, metadatas
-
-# Search documents
-def query_documents(question, index, docs, metadatas, top_k=3):
-    if index is None:
-        return "Error: FAISS index not initialized."
-
-    q_embedding = model.encode([question])
-    D, I = index.search(q_embedding, top_k)
-    results = [docs[i] for i in I[0]]
-    scores = D[0]
-
-    best_score = scores[0]
-    best_result = results[0]
-
-    if best_score < 1.6:
-        return best_result
-
-    question_keywords = re.findall(r"\w+", question.lower())
-    for doc in docs:
-        doc_lower = doc.lower()
-        if any(word in doc_lower for word in question_keywords):
-            return doc
-
-    return "Sorry, I'm not trained for this specific topic."
-
-# On module import, build index
+# Initialize components at module level
 try:
-    faiss_index, faiss_docs, faiss_meta = build_faiss_index()
-except Exception:
-    faiss_index = None
-    faiss_docs = []
-    faiss_meta = []
+    retriever = initialize_mongodb_vector_db()
+    llm = initialize_llm()
+except Exception as e:
+    print(f"Error initializing chatbot components: {str(e)}")
+    retriever = None
+    llm = None
+
+def get_chatbot_response(query: str) -> str:
+    """Get plain text response from the chatbot system using MongoDB documents"""
+    if not retriever or not llm:
+        return "Chatbot service is currently unavailable. Please try again later."
+    
+    try:
+        # Get relevant document chunks (already in plain text)
+        docs = retriever.get_relevant_documents(query)
+        if not docs or all(not doc.page_content.strip() for doc in docs):
+            return "Sorry, I'm not trained for this specific topic."
+        
+        # Prepare context (already plain text from processing)
+        context = "\n".join([doc.page_content for doc in docs])
+        prompt = f"""You are a helpful assistant. Answer using only this context.
+If the answer isn't here, say "I'm not trained for this."
+
+Context:
+{context}
+
+Question: {query}
+
+Plain text answer:"""
+        
+        # Get and return plain text response
+        response = llm(prompt, max_tokens=512, stop=["</s>"])
+        answer = response["choices"][0]["text"].strip()
+        
+        return answer if answer else "Sorry, I couldn't generate a response."
+    
+    except Exception as e:
+        print(f"Error generating response: {str(e)}")
+        return "An error occurred while processing your request."
+
 
 def run_mux_simulation(design_file, tb_file):
     with tempfile.TemporaryDirectory() as temp_dir:
