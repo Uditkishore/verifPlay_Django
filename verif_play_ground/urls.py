@@ -28,6 +28,7 @@ urlpatterns = [
     path('drawSystemBlockAPIView/', DrawSystemBlockAPIView.as_view(), name='drawSystemBlockAPIView'),
     path('api/chat', ChatAPIView.as_view(), name='chat'),
     path("simulate/mux/download-excel", MuxSimulationExcelDownloadAPIView.as_view(), name="mux-sim-excel"),
+    path("api/generate-waveform", WaveformGeneratorAPIView.as_view(), name="generate-waveform"),
 
 ]
 

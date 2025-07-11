@@ -276,6 +276,20 @@ class MuxSimulationExcelDownloadAPIView(APIView):
             "stdout": result["stdout"]
         })
     
+class WaveformGeneratorAPIView(APIView):
+    parser_classes = (MultiPartParser, FormParser)
+
+    def post(self, request):
+        excel_file = request.FILES.get("file")
+        if not excel_file:
+            return Response({"error": "Excel file is required."}, status=400)
+
+        result = generate_waveform_from_excel(excel_file)
+
+        if "error" in result:
+            return Response(result, status=500)
+
+        return Response(result, status=200)
 
 
 

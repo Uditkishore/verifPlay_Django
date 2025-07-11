@@ -17,6 +17,12 @@ from langchain_huggingface import HuggingFaceEmbeddings
 from langchain.text_splitter import RecursiveCharacterTextSplitter
 from llama_cpp import Llama
 from typing import List, Dict, Optional
+import json
+import shutil
+import subprocess
+from PIL import Image, ImageDraw, ImageFilter, ImageFont
+
+
 
 def parse_field(field_str):
     """
@@ -452,3 +458,134 @@ include $(shell cocotb-config --makefiles)/Makefile.sim
             "stdout": output,
             "df": df
         }
+
+def generate_waveform_from_excel(file_obj):
+    """
+    Generate waveform.json, waveform.png, waveform.svg, and styled PNG from an uploaded Excel file.
+    Returns the styled PNG path or an error.
+    """
+    try:
+        # Save uploaded file to temp directory
+        with tempfile.TemporaryDirectory() as temp_dir:
+            input_excel = os.path.join(temp_dir, "input.xlsx")
+            with open(input_excel, 'wb') as f:
+                for chunk in file_obj.chunks():
+                    f.write(chunk)
+
+            df = pd.read_excel(input_excel, engine="openpyxl")
+            data_buses = list(df.columns)
+
+            # --- Inline convert_to_wavejson ---
+
+            wavejson = {"signal": []}
+            num_timepoints = len(df)
+            for bus in data_buses:
+                signal_line = {"name": bus, "wave": ""}
+                values = [str(v).strip().upper() for v in df[bus].tolist()]
+                wave_data = []
+                last_val = None
+                for val in values:
+                    if val in {"0", "1"}:
+                        signal_line["wave"] += "." if val == last_val else val
+                        wave_data.append(None)
+                        last_val = val
+                    elif val == "X":
+                        signal_line["wave"] += "x"
+                        wave_data.append(None)
+                        last_val = val
+                    elif val == "Z":
+                        signal_line["wave"] += "z"
+                        wave_data.append(None)
+                        last_val = val
+                    else:
+                        signal_line["wave"] += "." if val == last_val else "="
+                        wave_data.append(None if val == last_val else val)
+                        last_val = val
+                if '=' in signal_line["wave"]:
+                    signal_line["data"] = [
+                        d for w, d in zip(signal_line["wave"], wave_data) if w == '=' and d is not None
+                    ]
+                wavejson["signal"].append(signal_line)
+            # -----------------------------------
+
+            json_path = os.path.join(temp_dir, "waveform.json")
+            png_path = os.path.join(temp_dir, "waveform.png")
+            svg_path = os.path.join(temp_dir, "waveform.svg")
+
+            with open(json_path, "w") as f:
+                json.dump(wavejson, f, indent=2)
+
+            wavedrom_path = shutil.which("wavedrom-cli")
+            if not wavedrom_path:
+                return {"error": "wavedrom-cli not found in PATH."}
+
+            subprocess.run([wavedrom_path, "-i", json_path, "-p", png_path], check=True, shell=True)
+            subprocess.run([wavedrom_path, "-i", json_path, "-p", svg_path], check=True, shell=True)
+
+            # --- Inline png_post_process ---
+            styled_png_path = os.path.join(settings.MEDIA_ROOT, "waveform_styled.png")
+            os.makedirs(settings.MEDIA_ROOT, exist_ok=True)
+            try:
+                img = Image.open(png_path).convert("RGBA")
+                w, h = img.size
+                scale = 1 if w > 1500 else 2
+                img = img.resize((w * scale, h * scale), Image.LANCZOS)
+
+                shadow_offset = (12, 12)
+                blur_radius = 14
+                alpha = img.split()[-1]
+                shadow = Image.new("RGBA", img.size, (0, 0, 0, 180))
+                shadow.putalpha(alpha)
+                shadow = shadow.filter(ImageFilter.GaussianBlur(blur_radius))
+
+                pad = 24
+                canvas_w = min(img.width + pad * 2 + shadow_offset[0], 3000)
+                canvas_h = min(img.height + pad * 2 + shadow_offset[1] + 60, 3000)
+
+                gradient_img = Image.new("RGBA", (canvas_w, canvas_h), (240, 240, 240, 255))
+                draw_bg = ImageDraw.Draw(gradient_img)
+                for y in range(canvas_h):
+                    shade = 245 - int(25 * (y / canvas_h))
+                    draw_bg.line([(0, y), (canvas_w, y)], fill=(shade, shade, shade, 255))
+
+                gradient_img.paste(shadow, (pad + shadow_offset[0], pad + shadow_offset[1]), shadow)
+                gradient_img.paste(img, (pad, pad), img)
+
+                draw = ImageDraw.Draw(gradient_img)
+                banner_h = 48
+                banner_rect = [0, 0, canvas_w, banner_h]
+                draw.rectangle(banner_rect, fill=(30, 41, 59, 255))
+
+                font_size = 28
+                try:
+                    font = ImageFont.truetype("arial.ttf", font_size)
+                except IOError:
+                    font = ImageFont.load_default()
+
+                text = "Digital Waveform"
+                text_bbox = draw.textbbox((0, 0), text, font=font)
+                tw = text_bbox[2] - text_bbox[0]
+                th = text_bbox[3] - text_bbox[1]
+                draw.text(((canvas_w - tw) / 2, (banner_h - th) / 2 - 2), text, font=font, fill=(255, 255, 255, 255))
+
+                wm_text = "© MyEDA Tool"
+                wm_font = font if font != ImageFont.load_default() else ImageFont.load_default()
+                wm_bbox = draw.textbbox((0, 0), wm_text, font=wm_font)
+                wmw = wm_bbox[2] - wm_bbox[0]
+                wmh = wm_bbox[3] - wm_bbox[1]
+                draw.text((canvas_w - wmw - 8, canvas_h - wmh - 6), wm_text, font=wm_font, fill=(0, 0, 0, 100))
+
+                gradient_img.save(styled_png_path, optimize=True)
+            except Exception as e:
+                return {"error": f"Post-process styling failed: {e}"}
+            # -----------------------------------
+
+            return {
+                "message": "Waveform generated successfully",
+                "image_url": settings.MEDIA_URL + "waveform_styled.png"
+            }
+
+    except subprocess.CalledProcessError as e:
+        return {"error": f"Error generating waveform image: {str(e)}"}
+    except Exception as e:
+        return {"error": f"Unexpected error: {str(e)}"}
