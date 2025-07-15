@@ -61,7 +61,16 @@ MIDDLEWARE = [
 
 ]
 
+CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",  # example for React dev server
+    "http://127.0.0.1:3000",  # optional
+    "https://your-frontend-domain.com",  # production frontend domain
+]
+
 ROOT_URLCONF = 'verif_play_ground.urls'
+
+
 
 TEMPLATES = [
     {
