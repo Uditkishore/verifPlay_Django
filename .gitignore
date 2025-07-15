@@ -155,7 +155,6 @@ tensorboard_logs/
 
 # Large data files
 video_meta/
-models/
 *.npz
 *.h5
 *.hdf5
