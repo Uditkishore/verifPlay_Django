@@ -214,35 +214,30 @@ class DrawSystemBlockAPIView(APIView):
 
 class ChatAPIView(APIView):
     """
-    Simplified Chat API that uses MongoDB-stored documents
-    (Documents are added directly to MongoDB, not through this API)
+    Simplified Chat API that uses MongoDB‑stored documents
     """
-    
+
     def post(self, request):
-        """
-        Handle chatbot queries
-        Request format:
-        {
-            "question": "Your question here"
-        }
-        """
+        # 1. Grab the question text
         question = request.data.get("question")
-        
+
+        # 2. Validate
         if not question or not isinstance(question, str):
             return Response(
                 {"error": "A valid question string is required"},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         try:
-            # Get response from utils.py's chatbot function
+            # 3. Get the answer using the same retriever & llm that were
+            #    initialised in utils.py
             answer = get_chatbot_response(question)
-            
-            return Response({
-                "answer": answer,
-                "status": "success"
-            })
-            
+
+            return Response(
+                {"answer": answer, "status": "success"},
+                status=status.HTTP_200_OK
+            )
+
         except Exception as e:
             return Response(
                 {
