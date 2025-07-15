@@ -339,8 +339,8 @@ def initialize_llm():
         model_path = os.path.join("chatbot/models", "mistral-7b-instruct-v0.1.Q4_K_M.gguf")
         return Llama(
             model_path=model_path,
-            n_ctx=2048,
-            n_threads=6,
+            n_ctx=32768,
+            n_threads=4,
             use_mlock=True,
             verbose=False
         )
